@@ -10,6 +10,13 @@
 // ($.prompt.suggest). Nothing is submitted by the plugin, so no origin framing.
 // The fork is also handed the session's skills and slash commands
 // ($.command.list), so a suggestion can be "/skill arguments".
+//
+// The band above the composer only exists in the terminal and the desktop app.
+// Where the session has no such surface (the Claude mobile app, VS Code, a
+// cloud or -p session), the suggestions are also written to the transcript as
+// one dim line ($.ui.log, never sent to the model), and the person's next
+// prompt, if it is exactly "n1", "n2" or "n3", is swapped for that suggestion.
+// The person still sends it themselves; the plugin submits nothing.
 
 import type { CommandInfo, EngineInterface, Register, RenderElement } from 'claude-code'
 
@@ -27,6 +34,13 @@ const SKILL_NAME_MAX = 64
 const SKILL_DESCRIPTION_MAX = 120
 const SKILLS_DESCRIBED_BUDGET = 6000
 const SKILLS_NAMED_BUDGET = 3000
+
+// Surfaces that draw the AbovePrompt band; the rest get the transcript line.
+const BAND_SURFACES: ReadonlySet<string> = new Set(['terminal', 'desktop'])
+// Only a prompt the person sent can pick a suggestion: not a peer session,
+// a channel relay or a scheduled trigger.
+const PERSON_ORIGINS: ReadonlySet<string> = new Set(['composer', 'bridge', 'sdk'])
+const PICK_CODE = /^n([1-3])$/i
 
 // Suggestions are model output, and the model reads untrusted text (files,
 // tool results, web pages). Before any of it reaches the screen or the prompt
@@ -139,8 +153,22 @@ function parseSuggestions(reply: string, known: ReadonlySet<string> | null): Sug
   return items
 }
 
+// One dim transcript line for surfaces without the band.
+function textOffer(items: readonly Suggestion[]): string {
+  const lines = items.map((item, index) => `  n${index + 1}  ${item.prompt}`)
+  return [`next steps (reply n1-n${items.length} to send one):`, ...lines].join('\n')
+}
+
+// A surface that cannot draw the band is attached, or nothing draws at all.
+function needsText(surfaces: readonly string[]): boolean {
+  return surfaces.length === 0 || surfaces.some(surface => !BAND_SURFACES.has(surface))
+}
+
 // Session-local view state; a hot reload resets it, which is fine.
 let view: View = { kind: 'hidden' }
+// What "n1".."n3" picks: the last suggestions written to the transcript,
+// replaced when the next turn completes and spent on first use.
+let pickable: Suggestion[] = []
 
 function show($: EngineInterface, nextView: View): void {
   view = nextView
@@ -150,6 +178,16 @@ function show($: EngineInterface, nextView: View): void {
 export const register: Register = (on, options) => {
   const minTurnChars = typeof options?.minAnswerChars === 'number' ? options.minAnswerChars : 80
   const suggestsSkills = options?.suggestSkills !== false
+  const writesText = options?.textFallback !== false
+
+  // "n2" sent from an app without the band becomes the second suggestion.
+  on('prompt.submit', async ($, e, next) => {
+    const pick = PICK_CODE.exec(e.text.trim())
+    const item = pick === null ? undefined : pickable[Number(pick[1]) - 1]
+    if (item === undefined || !PERSON_ORIGINS.has(e.origin.kind)) return next(e)
+    pickable = []
+    return next({ ...e, text: item.prompt })
+  }).catch(($, e, next) => next(e))
 
   // A new turn (typed or otherwise) hides whatever was offered.
   on('turn.start', async ($, e, next) => {
@@ -160,6 +198,7 @@ export const register: Register = (on, options) => {
   // Turn over: ask the fork, detached, so the turn's completion never waits on it.
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    pickable = []
     if (e.reason !== 'answer' || e.answer.trim().length < minTurnChars) return result
     const turnId = e.turnId
     show($, { kind: 'loading', turnId })
@@ -179,6 +218,13 @@ export const register: Register = (on, options) => {
       if (view.kind !== 'loading' || view.turnId !== turnId) return
       show($, items.length === 0 ? { kind: 'hidden' } : { kind: 'offer', items })
       if (items[0] !== undefined) void $.prompt.suggest({ text: items[0].prompt }).catch(() => undefined)
+      if (items.length > 0 && writesText) {
+        const surfaces = await $.session.surfaces().catch(() => [] as const)
+        if (needsText(surfaces)) {
+          pickable = items
+          $.ui.log(textOffer(items))
+        }
+      }
     })()
     return result
   })

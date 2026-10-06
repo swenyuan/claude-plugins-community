@@ -24,7 +24,24 @@ It is a function-hooks plugin (`hooks/register.tsx`):
 - A press calls `$.prompt.fill`; the top suggestion goes to `$.prompt.suggest`.
 - `turn.start`: hides the suggestions.
 
-Suggestions draw in the terminal. Other surfaces show nothing.
+Suggestions draw as buttons in the terminal and the desktop app.
+
+## In other apps
+
+The band above the prompt box exists only in the terminal and the desktop app. Where the session has no such surface (the Claude mobile app, VS Code, a cloud session, `claude -p`), or one of those is attached alongside the terminal, the suggestions are also written to the transcript as one dim line:
+
+```
+next steps (reply n1-n3 to send one):
+  n1  run the tests you just wrote
+  n2  do the same for the settings page
+  n3  /code-review high
+```
+
+Send `n1`, `n2` or `n3` as your next message and it is replaced by that suggestion. The swap happens only for a message you sent yourself, only for the suggestions shown since the last turn, and only once; any other text goes through unchanged. The line is not sent to the model.
+
+- `$.session.surfaces`: which apps are attached, to decide whether the line is needed.
+- `$.ui.log`: writes the line.
+- `prompt.submit`: swaps `n1`-`n3` for the suggestion.
 
 ## Options
 
@@ -32,3 +49,8 @@ Suggestions draw in the terminal. Other surfaces show nothing.
 | --- | --- | --- |
 | `minAnswerChars` | `80` | Skip suggestions after answers shorter than this |
 | `suggestSkills` | `true` | Tell the suggester which skills and slash commands the session has |
+| `textFallback` | `true` | In apps without the band, write the suggestions to the transcript and accept `n1`-`n3` |
+
+## Tests
+
+Run `claude plugin test` in this directory.
